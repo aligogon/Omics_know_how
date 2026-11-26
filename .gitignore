@@ -1,0 +1,16 @@
+# Archivos temporales y de cahché
+.Rhistory
+.RData
+.Rproj.user/
+*_cache/
+/.quarto/
+
+# Datos pesados y objetos de R (evita bloqueos en GitHub)
+data/
+*.rds
+*.RData
+*.rda
+*.csv
+*.tsv
+*.fastq*
+*.bam
