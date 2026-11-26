@@ -1,2 +1,2 @@
 # Omics_know_how
-Personal knowledge base for bioinformatics, omics data analysis, tutorials, workflows, experiments, and useful resources.
+A personal knowledge base for bioinformatics and omics data analysis. A collection of tutorials, practical experiments, workflows, useful tools, code snippets, and notes covering Multi-Omics, Single-Cell, Bulk RNA-seq, Spatial Transcriptomics, and other computational biology topics.
