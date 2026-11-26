@@ -7,6 +7,12 @@
   Dataset](#case-study-of-diablo-with-breast-tcga-dataset)
   - [To Begin](#to-begin)
   - [The Data](#the-data)
+  - [Initial Analysis](#initial-analysis)
+    - [Pairwise PLS (Projection of Latent Structures)
+      Comparisons](#pairwise-pls-projection-of-latent-structures-comparisons)
+  - [Initial DIABLO Model](#initial-diablo-model)
+    - [Design](#design)
+  - [Tuning the number of components](#tuning-the-number-of-components)
 
 ## Overview
 
@@ -98,3 +104,180 @@ summary(Y)
 
     Basal  Her2  LumA 
        45    30    75 
+
+We have 150 samples in each dataset, and Y label -\> 45 + 30 + 75 = 150
+
+## Initial Analysis
+
+### Pairwise PLS (Projection of Latent Structures) Comparisons
+
+It is strongly advised that prior to using the DIABLO framework that the
+data be examinsed in a non-integrative context.
+
+- PLS = Projection of Latent Structures or Partial Least Squares) -\> it
+  searches for hidden patterns also known as components.
+
+We want to know which variable from dataset A changes simultaneously as
+variable fromdataset B.
+
+- sPLS = sparse PLS -\> the s means we are aplying a selection filter,
+  instead of considering the whole bunch of genes. We select the “best”
+  variables using lasso penalization
+
+``` r
+list.keepX = c(25, 25) # select arbitrary values of features to keep
+list.keepY = c(25, 25)
+
+# generate three pairwise PLS models
+pls1 <- spls(data[["miRNA"]], data[["mRNA"]], 
+             keepX = list.keepX, keepY = list.keepY) 
+pls2 <- spls(data[["miRNA"]], data[["proteomics"]], 
+             keepX = list.keepX, keepY = list.keepY)
+pls3 <- spls(data[["mRNA"]], data[["proteomics"]], 
+             keepX = list.keepX, keepY = list.keepY)
+```
+
+#### Visualization
+
+We’ll use a **Circle Correlation Plot** -\> we should interpret them as
+a “radar” or “target”. Every dot corresponds to a concrete variable. The
+closer we see the dots to the external circle (1.0) the stronger is its
+correlation.
+
+When we set a cutoff in 0.5 we are telling the plot not to dorw any dot
+inside that inner circle (we don’t want to see variables with a poor
+correlation).
+
+- Points on the same position = positive correlation
+- Points on opposite position = negative correlation
+- 90º relationship between points (one up, one right) = no correlation
+
+If we see that the variables are close to the left or right, we might
+say there is a strong correlation with component 1.
+
+Visualize variable correlation with a cutoff of 0.5:
+
+``` r
+plotVar(pls1, cutoff = 0.5, title = "(a) miRNA vs mRNA",
+        legend = c("miRNA", "mRNA"), var.names = FALSE, style = "graphics",
+        pch = c(16, 17), cex = c(2, 2), col = c("darkorchid", "lightgreen"))
+```
+
+![](diablo-tcga_files/figure-commonmark/plot-pairwise-pls-1.png)
+
+``` r
+plotVar(pls2, cutoff = 0.5, title = "(b) miRNA vs proteomics",
+        legend = c("miRNA", "proteomics"), var.names = FALSE, style = "graphics",
+        pch = c(16, 17), cex = c(2, 2), col = c("darkorchid", "lightgreen"))
+```
+
+![](diablo-tcga_files/figure-commonmark/plot-pairwise-pls-2.png)
+
+``` r
+plotVar(pls3, cutoff = 0.5, title = "(c) mRNA vs proteomics",
+        legend = c("mRNA", "proteomics"), var.names = FALSE, style = "graphics",
+        pch = c(16, 17), cex = c(2, 2), col = c("darkorchid", "lightgreen"))
+```
+
+![](diablo-tcga_files/figure-commonmark/plot-pairwise-pls-3.png)
+
+The strong correlation between a large portion of the miRNA and mRNA
+features along the first component and to a slightly lesser extent on
+the second component is depicted in (a). Some of the features in (b)
+have very strong clustering while other do not, suggesting that some
+features of the mRNA and protein dataframes are highly correlated. The
+mRNA and protein features in (c) are the most weakly clustered but are
+the most strongly correlated along the first component specifically.
+
+Below is are correlations between the first component of each dataset
+for all three PLS models. It can be seen the values are around ~0.8 -
+0.9.
+
+*Extended revision*
+
+- 1)  -\> on the left, a bunch of high correlated variables among both
+      omics. On the right, a negative correlation with a group of
+      triangles.
+- 2)  -\> strong correlation on the group of the left. The miRNA on the
+      botton are not correlated with the rest.
+- 3)  -\> variables are more dispersed, but they are well positionated
+      for component 1.
+
+Below is are correlations between the first component of each dataset
+for all three PLS models. It can be seen the values are around ~0.8 -
+0.9.
+
+``` r
+# calculate correlation of miRNA and mRNA
+cor(pls1$variates$X, pls1$variates$Y) 
+```
+
+               comp1         comp2
+    comp1 0.88417918 -1.511654e-16
+    comp2 0.04929884  7.425733e-01
+
+``` r
+# calculate correlation of miRNA and proteins
+cor(pls2$variates$X, pls2$variates$Y) 
+```
+
+               comp1        comp2
+    comp1 0.83619934 6.187928e-17
+    comp2 0.02358213 5.626135e-01
+
+``` r
+# calculate correlation of mRNA and proteins
+cor(pls3$variates$X, pls3$variates$Y) 
+```
+
+               comp1         comp2
+    comp1  0.9360264 -1.751515e-17
+    comp2 -0.0181090  5.972544e-01
+
+## Initial DIABLO Model
+
+### Design
+
+The moderate to high correlation between these features means that an
+appropriate value for the design matrix would be about ~0.8 - 0.9.
+However, as discussed in the N-Integration Methods page, values above
+0.5 will cause a reduction in predictive ability of the model - and
+prediction is what is desired in this context. Hence, a value of 0.1
+will be used to prioritise the discriminative ability of the model.
+
+``` r
+# for square matrix filled with 0.1s
+design = matrix(0.1, ncol = length(data), nrow = length(data), 
+                dimnames = list(names(data), names(data)))
+diag(design) = 0 # set diagonal to 0s
+
+design
+```
+
+               miRNA mRNA proteomics
+    miRNA        0.0  0.1        0.1
+    mRNA         0.1  0.0        0.1
+    proteomics   0.1  0.1        0.0
+
+With a design in place, the initial DIABLO model can be generated. An
+arbitrarily high number of components (ncomp = 5) will be used.
+
+``` r
+# form basic DIABLO model
+basic.diablo.model = block.splsda(X = data, Y = Y, ncomp = 5, design = design) 
+```
+
+## Tuning the number of components
+
+To choose the number of components for the final DIABLO model, the
+function perf() is run with 10-fold cross-validation repeated 10 times.
+
+``` r
+# run component number tuning with repeated CV
+perf.diablo = perf(basic.diablo.model, validation = 'Mfold', 
+                   folds = 10, nrepeat = 10) 
+
+plot(perf.diablo) # plot output of tuning
+```
+
+![](diablo-tcga_files/figure-commonmark/unnamed-chunk-3-1.png)
