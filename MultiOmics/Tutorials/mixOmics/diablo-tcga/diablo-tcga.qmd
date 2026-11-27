@@ -243,7 +243,17 @@ Choose the distance that gives the lowest error rate with the fewest components:
 plot(perf.diablo) # plot output of tuning
 ```
 
-From the performance plot above,  we observe that both overall and balanced error rate (BER) decrease from 1 to 2 components. The standard deviation indicates a potential slight gain in adding more components. The centroids.dist distance seems to give the best accuracy (see Supplemental Material in [6]). Considering this distance and the BER, the output $choice.ncomp indicates the optimal number of components for the final DIABLO model.
+From the performance plot above,  we observe that both overall and balanced error rate (BER) decrease from 1 to 2 components. 
+We can see that moving from Component 1 -> 2 (The Cliff): the line drops sharply downward. This means adding a 2nd component gives a huge, obvious improvement in accuracy. From Component 2 → 3, 4, 5 (The Plateau): The line flattens out—or even dips just a tiny bit—and the vertical error bars heavily overlap with Component 2's error bar.
+
+Whenever a line flattens out and the error bars overlap, it means the tiny drop in error could just be random luck from how the data was split, rather than a real biological improvement. In statistics, we always pick the simplest model right at the bottom of the "cliff" (the "elbow" of the curve).
+
+The standard deviation indicates a potential slight gain in adding more components. The centroids.dist distance seems to give the best accuracy (see Supplemental Material in [6]). Considering this distance and the BER, the output $choice.ncomp indicates the optimal number of components for the final DIABLO model.
+
+Because eyeballing error bars can be subjective, mixOmics actually runs a statistical test (a one-sided t-test) behind the scenes to generate perf.diablo$choice.ncomp:
+- It compares the 10 error rates of Component 1 against Component 2. The improvement is statistically significant, so it keeps going.
+- Next, it compares Component 2 against Component 3. Even if Component 3's average error looks slightly lower on the graph, the t-test checks if that difference is big enough compared to the noise (the error bars). If it is not statistically significant, mixOmics stops and declares 2 the winner.
+
 
 
 ```{r}
@@ -256,4 +266,63 @@ perf.diablo$choice.ncomp$WeightedVote
 What is WeightedVote?
 
 Since you have 3 omics (miRNA, mRNA, proteomics), each omic "votes" on which subtype a patient belongs to. WeightedVote gives more voting power to the omics that are better at predicting Y.
-Looking at Overall.BER and centroids.dist, the optimal number of components is 2. Adding components 3, 4, or 5 doesn't meaningfully reduce the error—it just adds noise.
+
+*Whatch out* -> Looking at the original result of the tutorial we get 2 components at this point: 
+"Looking at Overall.BER and centroids.dist, the optimal number of components is 2. Adding components 3, 4, or 5 doesn't meaningfully reduce the error—it just adds noise"
+However, this time I observed 3 components as the ideal value. We can follow the rest of the analysis with 2 or 3, just for the comprehension of the pipeline. 
+
+### Tuning the number of features (tune.block.splsda())
+Now that we know ncomp = 2 (or 3, as stated before), we need to decide how many variables (keepX) to select from each omic for Component 1 and Component 2.
+
+This tuning function should be used to tune the keepX parameters in the block.splsda() function.
+
+We choose the optimal number of variables to select in each data set using the tune.block.splsda() function, for a grid of keepX values for each type of omics. Note that the function has been set to favour a relatively small signature while allowing us to obtain a sufficient number of variables for downstream validation and/or interpretation. See ?tune.block.splsda.
+
+The function tune is run with 10-fold cross validation, but repeated only once. Note that for a more thorough tuning process, provided sufficient computational time, we could increase the nrepeat argument. Here we have saved the results into an RData object that is available for download as the tuning can take a very long time, especially on lower end machines.
+
+
+```{r}
+#| label: features tuning
+# set grid of values for each component to test
+test.keepX = list (mRNA = c(5:9, seq(10, 18, 2), seq(20,30,5)), 
+                   miRNA = c(5:9, seq(10, 18, 2), seq(20,30,5)),
+                   proteomics = c(5:9, seq(10, 18, 2), seq(20,30,5)))
+
+# run the feature selection tuning
+tune.TCGA = tune.block.splsda(X = data, Y = Y, ncomp = ncomp, 
+                              test.keepX = test.keepX, design = design,
+                              validation = 'Mfold', folds = 10, nrepeat = 1,
+                              dist = "centroids.dist")
+```
+
+*What is test.keepX?*
+It is a "menu" of candidate sizes for R to test. That code translates to testing: 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, and 30 features. Notice the grid is denser for small numbers (5 to 9) and takes bigger jumps later (20, 25, 30) to save time.
+*Why nrepeat = 1 here?*
+Testing every combination of mRNA × miRNA × proteomics across 10 folds is computationally heavy. The authors set nrepeat = 1 just so the tutorial runs in a reasonable time.
+*why the grid starts at 5?*
+Selecting only 1 or 2 features per omic is usually too fragile—if one gene is noisy in a new patient, the prediction fails, and 1–2 features aren't enough to understand a biological pathway. Starting at 5 guarantees a minimum workable "signature."
+*When do you know you should change the grid?*
+There are three clear signs that you should adjust test.keepX:
+- The result hits the edge of your grid: If tune.block.splsda() picks the maximum value you gave it (e.g., it picks 30 when your grid stopped at 30), the true optimum might actually be 40 or 50. Expand the grid upward and re-run. (Same if it hits the minimum and you want an even smaller signature.
+- Your biological goal requires a specific size
+- It is taking too long to run
+
+The number of features to select on each component is returned in tune.TCGA$choice.keepX.
+
+```{r}
+#| label: keepX choice
+list.keepX = tune.TCGA$choice.keepX # set the optimal values of features to retain
+list.keepX
+```
+
+
+#### Valuable hints
+- Rule of thumb for ncomp: In classification models (PLS-DA / DIABLO), the optimal number of components is almost always around K - 1, where K is the number of groups in Y. If you have 3 cancer subtypes, ncomp = 2 is right on target.
+- Speeding up tune.block.splsda(): In real projects, you should use nrepeat = 5 or 10 for stable results. To avoid waiting hours, pass BPPARAM = BiocParallel::SnowParam(workers = 4) (or however many CPU cores you have) to run it in parallel, and save the result immediately with saveRDS(tune.TCGA, "tune_TCGA.rds") so you never have to re-run it. (**MUST CHECK THIS, NOT TESTED YET**)
+- Keep the grid realistic: Don't test 50 different values in test.keepX at once. Start with a coarse grid (e.g., c(5, 10, 20, 30, 50)) to see roughly where the sweet spot is, and only refine around that region if needed.
+- In real projects, you should tailor each omic's grid to its total number of variables:
+        - If your mRNA table has 10,000 genes, you might test c(10, 20, 30, 50, 100)
+        - If your proteomics or clinical table only has 40 variables, you obviously cannot test 50 or 100—you would use something like c(5, 10, 15, 20).
+
+
+
