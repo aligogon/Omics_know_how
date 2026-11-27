@@ -12,7 +12,8 @@
       Comparisons](#pairwise-pls-projection-of-latent-structures-comparisons)
   - [Initial DIABLO Model](#initial-diablo-model)
     - [Design](#design)
-  - [Tuning the number of components](#tuning-the-number-of-components)
+    - [Tuning the number of components
+      (perf())](#tuning-the-number-of-components-perf)
 
 ## Overview
 
@@ -245,11 +246,29 @@ However, as discussed in the N-Integration Methods page, values above
 prediction is what is desired in this context. Hence, a value of 0.1
 will be used to prioritise the discriminative ability of the model.
 
+        *Extended explanation*
+
+        Think of the design matrix as a set of instructions telling DIABLO how strongly you want it to link your different omics datasets together.
+        It is a simple grid where every row and column is one of your omics (miRNA, mRNA, proteomics). Each number inside the grid goes from 0 to 1:
+
+        - A value of 0 = "Ignore whether these two omics correlate with each other."
+        - A value of 1 = "Force these two omics to correlate as strongly as possible."
+
+        The diagonal will be 0 beacuse a dataset does not need to be linked to itself.
+
+        Why use 0.1 instead of 0.8 - 0.9? -> DIABLO is trying to do two jobs at the same time:
+
+                - Find correlations between your omics (miRNA, mRNA, and proteomics).
+                - Predict the outcome Y (for example, accurately separating different breast cancer subtypes).
+
+        Based on the previous pairwise PLS plots, the omics are naturally very correlated (around 0.8 - 0.9). We might think we should put 0.8 in the design matrix to match that. However, if we put a high value (above 0.5), DIABLO becomes obsessed with making the omics agree with each other, and it loses accuracy when predicting Y.
+        Since prediction (discriminative ability) is the main goal here, the authors choose 0.1. This tells the model: "Focus mainly on separating the patient groups (Y) accurately, while still giving a gentle nudge to keep the omics correlated."
+
 ``` r
 # for square matrix filled with 0.1s
 design = matrix(0.1, ncol = length(data), nrow = length(data), 
                 dimnames = list(names(data), names(data)))
-diag(design) = 0 # set diagonal to 0s
+diag(design) = 0 # set diagonal (miRNA-miRNA, mRNA-mRNA, etc.) to 0s
 
 design
 ```
@@ -260,24 +279,92 @@ design
     proteomics   0.1  0.1        0.0
 
 With a design in place, the initial DIABLO model can be generated. An
-arbitrarily high number of components (ncomp = 5) will be used.
+arbitrarily high number of components (ncomp = 5) will be used. Because
+at this stage, you don’t know yet how many components you actually need.
+You start with a generous number like 5 so that in the very next step
+(using the perf() function), you can evaluate components 1 through 5 and
+see where the model’s prediction error stops improving.
 
 ``` r
 # form basic DIABLO model
 basic.diablo.model = block.splsda(X = data, Y = Y, ncomp = 5, design = design) 
 ```
 
-## Tuning the number of components
+With all of these, we have created the initial model, now we should
+evaluate and tune the number of components and variables. THis process
+can be called hyperparameter tuning.
 
-To choose the number of components for the final DIABLO model, the
-function perf() is run with 10-fold cross-validation repeated 10 times.
+### Tuning the number of components (perf())
+
+In the previous step, we built a basic model with ncomp = 5. Now we test
+whether we actually need all 5 components, or if 2 or 3 is enough. To
+choose the number of components for the final DIABLO model, the function
+perf() is run with 10-fold cross-validation repeated 10 times.
 
 ``` r
 # run component number tuning with repeated CV
 perf.diablo = perf(basic.diablo.model, validation = 'Mfold', 
                    folds = 10, nrepeat = 10) 
+```
 
+        What is 10-fold CV repeated 10 times?
+        Imagine splitting your patients into 10 equal groups ("folds"). The model trains on 9 groups and tries to predict the cancer subtype of the 10th group. It repeats this so every group gets tested once. Doing nrepeat = 10 shuffles the patients and repeats the whole process 10 times so your results aren't just a lucky split.
+
+How to interpret that plot?
+
+    Concepts explanation: 
+       
+       *Overall Error Rate (Overall.ER) vs. Balanced Error Rate (Overall.BER):*
+                - ER is just the total percentage of patients misclassified.
+                - BER calculates the error rate for each cancer subtype separately and averages them. Hint: Always prefer BER when your groups have different sizes (e.g., 100 patients of Subtype A and only 20 of Subtype B), otherwise the model can cheat by just guessing the biggest group. 
+
+        *What are the 3 distances (max.dist, centroids.dist, mahalanobis.dist)?*
+        When DIABLO (or PLS-DA) predicts which group a new patient belongs to, it needs a rule to turn the model's numbers into a final class label (e.g., Subtype A, Subtype B, or Subtype C). The three distances are simply three different rules for making that decision:
+                - max.dist (Maximum Distance) -> This is the simplest rule. 
+                        - For every new patient, the model outputs a predicted score for each group (for example: Subtype A = 0.75, Subtype B = 0.20, Subtype C = 0.05). max.dist literally just picks the group with the highest score. 
+                        - Intuition: "Whichever group gets the highest vote wins."
+                        - Best for: Clean datasets where the groups are clearly separated and don't overlap much.
+                - centroids.dist (Centroids Distance)
+                        - The model finds the exact center (average point) of each group in the component space. When a new patient arrives, it measures the straight-line (Euclidean) distance from that patient to each group's center and assigns them to the closest center.
+                        - Intuition: "Measure with a ruler to the middle of each cluster; whichever middle is closest wins."
+                        - Best for: A reliable, well-rounded choice when groups form roughly circular clouds, even if there is some overlap.
+                - mahalanobis.dist (Mahalanobis Distance)
+                        - Like centroids.dist, it measures the distance to each group's center—but it also accounts for the size, spread, and shape of each group
+                        - Intuition: Imagine Group A is a tiny, tight circle and Group B is a huge, stretched-out oval. A new patient might be slightly closer in straight-line distance to Group A's center, yet still be sitting right inside the stretched-out cloud of Group B. A normal ruler (centroids.dist) would pick Group A, whereas mahalanobis.dist understands the shape of the clouds and correctly assigns the patient to Group B.
+                        - Best for: Complex datasets where one group is much more variable/spread out than another, or where clusters are elongated ovals rather than neat circles.
+
+Choose the distance that gives the lowest error rate with the fewest
+components:
+
+``` r
 plot(perf.diablo) # plot output of tuning
 ```
 
-![](diablo-tcga_files/figure-commonmark/unnamed-chunk-3-1.png)
+![](diablo-tcga_files/figure-commonmark/components%20tuning%20plot-1.png)
+
+From the performance plot above, we observe that both overall and
+balanced error rate (BER) decrease from 1 to 2 components. The standard
+deviation indicates a potential slight gain in adding more components.
+The centroids.dist distance seems to give the best accuracy (see
+Supplemental Material in \[6\]). Considering this distance and the BER,
+the output \$choice.ncomp indicates the optimal number of components for
+the final DIABLO model.
+
+``` r
+# set the optimal ncomp value
+ncomp = perf.diablo$choice.ncomp$WeightedVote["Overall.BER", "centroids.dist"] 
+# show the optimal choice for ncomp for each dist metric
+perf.diablo$choice.ncomp$WeightedVote 
+```
+
+                max.dist centroids.dist mahalanobis.dist
+    Overall.ER         3              3                3
+    Overall.BER        3              3                3
+
+What is WeightedVote?
+
+Since you have 3 omics (miRNA, mRNA, proteomics), each omic “votes” on
+which subtype a patient belongs to. WeightedVote gives more voting power
+to the omics that are better at predicting Y. Looking at Overall.BER and
+centroids.dist, the optimal number of components is 2. Adding components
+3, 4, or 5 doesn’t meaningfully reduce the error—it just adds noise.
